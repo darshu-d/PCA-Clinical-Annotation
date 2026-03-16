@@ -1,0 +1,26 @@
+---
+title: "Methods for Handling Multiple Outcomes in Health Data"
+subtitle: 'PCA Clinical Annotation'
+author: "Sivakamakshi Muthu Kumarasamy, Shivadarshini Sreekanth"
+output: 
+  rmdformats::readthedown:
+    self_contained: true
+    highlight: "default"
+    thumbnails: false
+    fig_width: 7
+    fig_height: 5
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(readxl)
+```
+
+```{r}
+data <- read_excel("PCA_Clinical_Annotation.xls")
+str(data)
+```

@@ -12,15 +12,286 @@ output:
     toc_depth: 3
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
+```{r setup, message=FALSE, warning=FALSE}
+#libraries
 library(readxl)
+library(dplyr)
+library(ggplot2)
+library(readxl)
+library(survival)
+library(survminer)
+library(tableone)
+library(mice)
+library(plotly)
+library(table1)
+library(tidyr)
+library(readr)
+library(dplyr)
+library(table1)
+library(survival)
+library(survminer)
+library(WinRatio) 
+library(BuyseTest)
+library(msm)
 ```
 
 ```{r}
-data <- read_excel("PCA_Clinical_Annotation.xls")
-str(data)
+#load dataset
+PCA <- read_excel("PCA_Clinical_Annotation.xls")
+```
+
+```{r}
+# Clean the data to improve readability
+clean_df <- PCA %>%
+  filter(Type == "PRIMARY") %>%
+  mutate(
+    
+    # ID
+    id = `Sample ID`,
+    
+    # Overall Survival
+    os_time   = as.numeric(SurvTime),
+    os_status = ifelse(Event == "NO", 0, 1),
+    
+    # BCR
+    bcr_time   = as.numeric(BCR_FreeTime),
+    bcr_status = ifelse(BCR_Event == "BCR_Algorithm", 1, 0),
+    
+    # Metastasis
+    met_status = ifelse(MetsEvent == "NO", 0, 1),
+    
+    # Baseline variables
+    Age = as.numeric(DxAge),
+    PSA = as.numeric(gsub("[^0-9.]", "", PreTxPSA)),
+    
+    Race = factor(Race),
+    ClinT_Stage = factor(ClinT_Stage),
+    PathStage = factor(PathStage),
+    
+    # Nomogram
+    NomoPred_SVI = as.numeric(`Nomogram NomoPred_SVI`)
+    
+  ) %>%
+  select(
+    id,
+    Age, PSA,
+    Race, ClinT_Stage, PathStage, NomoPred_SVI,
+    bcr_time, bcr_status,
+    met_status,
+    os_time, os_status
+  )
+
+clean_df$NomoPred_SVI[is.na(clean_df$NomoPred_SVI)] <- median(clean_df$NomoPred_SVI, na.rm = TRUE)
+```
+
+```{r}
+names(clean_df)
+dim(clean_df)
+head(clean_df)
+```
+
+## Numeric summary
+```{r}
+numeric_summary <- clean_df %>%
+  summarise(
+    mean_OS    = mean(os_time, na.rm = TRUE),
+    sd_OS      = sd(os_time, na.rm = TRUE),
+    median_OS  = median(os_time, na.rm = TRUE),
+    min_OS     = min(os_time, na.rm = TRUE),
+    max_OS     = max(os_time, na.rm = TRUE),
+    
+    mean_BCR   = mean(bcr_time, na.rm = TRUE),
+    sd_BCR     = sd(bcr_time, na.rm = TRUE),
+    median_BCR = median(bcr_time, na.rm = TRUE),
+    min_BCR    = min(bcr_time, na.rm = TRUE),
+    max_BCR    = max(bcr_time, na.rm = TRUE),
+    
+    mean_Age   = mean(Age, na.rm = TRUE),
+    sd_Age     = sd(Age, na.rm = TRUE),
+    mean_PSA   = mean(PSA, na.rm = TRUE),
+    sd_PSA     = sd(PSA, na.rm = TRUE)
+  )
+
+numeric_summary
+```
+
+## Summary statistics for categorical variables
+```{r}
+label(clean_df$Race)        <- "Race"
+label(clean_df$ClinT_Stage) <- "Clinical T Stage"
+label(clean_df$PathStage)   <- "Pathological Stage"
+
+table1(~ Race + ClinT_Stage + PathStage, data = clean_df)
+```
+
+```{r}
+met_plot <- ggplot(clean_df, aes(x = ClinT_Stage, fill = as.factor(met_status))) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = "Metastasis Events by Clinical T Stage",
+    x = "Clinical T Stage",
+    y = "Count",
+    fill = "Metastasis"
+  ) +
+  scale_fill_manual(
+    values = c("0" = "steelblue", "1" = "tomato"),
+    labels = c("No Event", "Event")
+  ) +
+  theme_minimal()
+
+ggplotly(met_plot)
+```
+
+```{r}
+met_plot_path <- ggplot(clean_df, aes(x = PathStage, fill = as.factor(met_status))) +
+  geom_bar(position = "dodge") +
+  labs(
+    title = "Metastasis Events by Pathological Stage",
+    x = "Pathological Stage",
+    y = "Count",
+    fill = "Metastasis"
+  ) +
+  scale_fill_manual(
+    values = c("0" = "steelblue", "1" = "tomato"),
+    labels = c("No Event", "Event")
+  ) +
+  theme_minimal()
+
+ggplotly(met_plot_path)
+```
+
+```{r}
+event_count <- clean_df %>%
+  summarise(
+    BCR_Events = sum(bcr_status == 1, na.rm = TRUE),
+    MET_Events = sum(met_status == 1, na.rm = TRUE),
+    OS_Events  = sum(os_status == 1, na.rm = TRUE)
+  )
+event_count
+```
+
+```{r}
+event_long <- event_count %>%
+  pivot_longer(
+    cols = c(BCR_Events, MET_Events, OS_Events),
+    names_to = "Endpoint",
+    values_to = "Events"
+  )
+
+plot_events <- ggplot(event_long, aes(x = Endpoint, y = Events, fill = Endpoint)) +
+  geom_col(position = position_dodge(width = 0.7)) +
+  labs(
+    title = "BCR, MET and OS: Event Counts",
+    x = "Endpoint",
+    y = "No. of events",
+    fill = "Endpoint"
+  ) +
+  theme_minimal()
+
+ggplotly(plot_events)
+```
+
+## Baseline variables
+```{r}
+vars <- c("Age", "PSA", "Race", "ClinT_Stage", "PathStage",
+          "os_status", "bcr_status", "met_status")
+factorVars <- c("Race", "ClinT_Stage", "PathStage")
+
+tab1 <- CreateTableOne(
+  vars = vars,
+  strata = "ClinT_Stage",
+  data = clean_df,
+  factorVars = factorVars
+)
+
+print(tab1, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE)
+```
+
+## Composite Outcome
+```{r}
+clean_df <- clean_df %>%
+  mutate(
+    comp_status = ifelse(os_status == 1 | bcr_status == 1 | met_status == 1, 1, 0),
+    comp_time = pmin(os_time, bcr_time, na.rm = TRUE)
+  )
+
+table1(~ comp_status + comp_time, data = clean_df)
+```
+
+## Binary outcome
+```{r}
+clean_df <- clean_df %>%
+  mutate(
+    binary_os   = factor(os_status, levels = c(0, 1), labels = c("No Event", "Event")),
+    binary_bcr  = factor(bcr_status, levels = c(0, 1), labels = c("No Event", "Event")),
+    binary_met  = factor(met_status, levels = c(0, 1), labels = c("No Event", "Event")),
+    binary_comp = factor(comp_status, levels = c(0, 1), labels = c("No Event", "Event"))
+  )
+
+table(clean_df$binary_os)
+table(clean_df$binary_bcr)
+table(clean_df$binary_met)
+table(clean_df$binary_comp)
+```
+
+## Logistic Regression
+```{r}
+log_os <- glm(os_status ~ Age + PSA + ClinT_Stage,
+              family = binomial, data = clean_df)
+
+log_bcr <- glm(bcr_status ~ Age + PSA + ClinT_Stage,
+               family = binomial, data = clean_df)
+
+log_met <- glm(met_status ~ Age + PSA + ClinT_Stage,
+               family = binomial, data = clean_df)
+
+log_comp <- glm(comp_status ~ Age + PSA + ClinT_Stage,
+                family = binomial, data = clean_df)
+
+tidy_logistic <- function(fit, title){
+  broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) |>
+    mutate(
+      OR_CI = sprintf("%.2f (%.2f-%.2f)", estimate, conf.low, conf.high),
+      p = signif(p.value, 3)
+    ) |>
+    select(term, OR_CI, p) |>
+    rename(Variable = term, `OR (95% CI)` = OR_CI, `p-value` = p) |>
+    (\(df){
+      cat(paste0("<b>", title, "</b>"))
+      knitr::kable(df, format = "html", escape = FALSE) |>
+        kableExtra::kable_styling(full_width = TRUE, font_size = 18)
+    })()
+}
+
+tidy_logistic(log_os, "Logistic - OS Event")
+cat("<br>")
+tidy_logistic(log_bcr, "Logistic - BCR Event")
+cat("<br>")
+tidy_logistic(log_met, "Logistic - MET Event")
+cat("<br>")
+tidy_logistic(log_comp, "Logistic - Composite Event")
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
 ```

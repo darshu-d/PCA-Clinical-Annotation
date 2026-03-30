@@ -315,8 +315,6 @@ ggsurvplot(km_bcr,
            data = clean_df,
            pval = TRUE,
            conf.int = TRUE,
-           risk.table = TRUE,
-           risk.table.col = "strata",
            palette = c("blue", "green", "red"),
            title = "BCR-Free Survival by Clinical T-Stage",
            xlab = "Time (months)", 
@@ -329,7 +327,7 @@ ggsurvplot(km_bcr,
 km_met <- survfit(Surv(met_time, met_status) ~ ClinT_Stage, data = clean_df)
 
 ggsurvplot(km_met, data = clean_df, pval = TRUE, conf.int = TRUE,
-           risk.table = TRUE, palette = c("blue", "green","red"),
+           palette = c("blue", "green","red"),
            title = "Metastasis-Free Survival by T-Stage")
 
 # Composite Kaplan-Meier plot

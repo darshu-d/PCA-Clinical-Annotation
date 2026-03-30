@@ -33,11 +33,13 @@ library(survminer)
 library(WinRatio) 
 library(BuyseTest)
 library(msm)
+library(cmprsk)
 ```
 
 ```{r}
 #load dataset
 PCA <- read_excel("PCA_Clinical_Annotation.xls")
+head(PCA)
 ```
 
 ```{r}
@@ -65,8 +67,14 @@ clean_df <- PCA %>%
     PSA = as.numeric(gsub("[^0-9.]", "", PreTxPSA)),
     
     Race = factor(Race),
-    ClinT_Stage = factor(ClinT_Stage),
-    PathStage = factor(PathStage),
+    ClinT_Stage = factor(ClinT_Stage) %>%
+      recode("T1C" = "T1",
+             "T2A" = "T2", "T2B" = "T2","T2C" = "T2",
+             "T3A" = "T3", "T3B" = "T3"),
+    PathStage = factor(PathStage) %>%
+      recode("T2A" = "T2",
+             "T2B" = "T3","T2C" = "T2",
+             "T3A" = "T3","T3B"	= "T3", "T3C" = "T3"),
     
     # Nomogram
     NomoPred_SVI = as.numeric(`Nomogram NomoPred_SVI`)
@@ -125,7 +133,11 @@ table1(~ Race + ClinT_Stage + PathStage, data = clean_df)
 ```
 
 ```{r}
-met_plot <- ggplot(clean_df, aes(x = ClinT_Stage, fill = as.factor(met_status))) +
+clean_df_plot <- clean_df %>%
+  mutate(met_status = factor (met_status,
+                              levels = c(0,1),
+                              labels = c("No Metastasis", "Metastasis Event")))
+met_plot <- ggplot(clean_df_plot, aes(x = ClinT_Stage, fill = as.factor(met_status))) +
   geom_bar(position = "dodge") +
   labs(
     title = "Metastasis Events by Clinical T Stage",
@@ -134,16 +146,15 @@ met_plot <- ggplot(clean_df, aes(x = ClinT_Stage, fill = as.factor(met_status)))
     fill = "Metastasis"
   ) +
   scale_fill_manual(
-    values = c("0" = "steelblue", "1" = "tomato"),
-    labels = c("No Event", "Event")
-  ) +
+    values = c("No Metastasis" = "steelblue", "Metastasis Event" = "tomato"),
+    ) +
   theme_minimal()
 
 ggplotly(met_plot)
 ```
 
 ```{r}
-met_plot_path <- ggplot(clean_df, aes(x = PathStage, fill = as.factor(met_status))) +
+met_plot_path <- ggplot(clean_df_plot, aes(x = PathStage, fill = as.factor(met_status))) +
   geom_bar(position = "dodge") +
   labs(
     title = "Metastasis Events by Pathological Stage",
@@ -152,9 +163,8 @@ met_plot_path <- ggplot(clean_df, aes(x = PathStage, fill = as.factor(met_status
     fill = "Metastasis"
   ) +
   scale_fill_manual(
-    values = c("0" = "steelblue", "1" = "tomato"),
-    labels = c("No Event", "Event")
-  ) +
+    values = c("No Metastasis" = "steelblue", "Metastasis Event" = "tomato"),
+    ) +
   theme_minimal()
 
 ggplotly(met_plot_path)
@@ -201,21 +211,24 @@ tab1 <- CreateTableOne(
   vars = vars,
   strata = "ClinT_Stage",
   data = clean_df,
-  factorVars = factorVars
+  factorVars = factorVars,
+  test = TRUE
 )
 
-print(tab1, showAllLevels = TRUE, quote = FALSE, noSpaces = TRUE)
+tab1
 ```
 
 ## Composite Outcome
 ```{r}
 clean_df <- clean_df %>%
   mutate(
-    comp_status = ifelse(os_status == 1 | bcr_status == 1 | met_status == 1, 1, 0),
-    comp_time = pmin(os_time, bcr_time, na.rm = TRUE)
+    met_time = ifelse(met_status ==1 , pmin(os_time, bcr_time, na.rm = TRUE),
+                      pmin(os_time, bcr_time, na.rm = TRUE)),
+    comp_status = pmax(os_status, bcr_status, met_status),
+    comp_time = pmin(os_time, bcr_time, met_time, na.rm = TRUE)
   )
 
-table1(~ comp_status + comp_time, data = clean_df)
+table1(~ comp_status + comp_time + met_status + met_time, data = clean_df)
 ```
 
 ## Binary outcome
@@ -236,6 +249,9 @@ table(clean_df$binary_comp)
 
 ## Logistic Regression
 ```{r}
+
+clean_df$ClinT_Stage <- relevel(clean_df$ClinT_Stage, ref = "T1")
+
 log_os <- glm(os_status ~ Age + PSA + ClinT_Stage,
               family = binomial, data = clean_df)
 
@@ -273,11 +289,55 @@ tidy_logistic(log_comp, "Logistic - Composite Event")
 ```
 
 ```{r}
+# Cumulative incidence
 
+fit <- cuminc(ftime = clean_df$comp_time, fstatus = clean_df$comp_status, 
+              group = clean_df$ClinT_Stage)
+
+ggcompetingrisks(fit) + 
+  labs(title = "Progression Cascade by T-Stage", 
+       x = "Time (months)", y = "Cumulative Incidence") 
 ```
 
 ```{r}
+clean_df <- clean_df %>%
+  mutate(
+    bcr_time = ifelse(is.na(bcr_time), max(os_time, na.rm=TRUE), bcr_time),
+    met_time = ifelse(is.na(met_time), max(os_time, na.rm=TRUE), met_time),
+    comp_time = pmin(os_time, bcr_time, met_time, na.rm = TRUE),
+    across(c(bcr_time, met_time, comp_time), ~pmax(., 0))
+  )
 
+# BCR Kaplan-Meier plot
+
+km_bcr <- survfit(Surv(bcr_time, bcr_status) ~ ClinT_Stage, data = clean_df)
+ggsurvplot(km_bcr,
+           data = clean_df,
+           pval = TRUE,
+           conf.int = TRUE,
+           risk.table = TRUE,
+           risk.table.col = "strata",
+           palette = c("blue", "green", "red"),
+           title = "BCR-Free Survival by Clinical T-Stage",
+           xlab = "Time (months)", 
+           ylab = "BCR-Free Probability",
+           legend.title = "ClinT_Stage",
+           legend.labs = c("T1", "T2", "T3"))
+
+# Metastasis Kaplan-Meier plot  
+
+km_met <- survfit(Surv(met_time, met_status) ~ ClinT_Stage, data = clean_df)
+
+ggsurvplot(km_met, data = clean_df, pval = TRUE, conf.int = TRUE,
+           risk.table = TRUE, palette = c("blue", "green","red"),
+           title = "Metastasis-Free Survival by T-Stage")
+
+# Composite Kaplan-Meier plot
+
+km_comp <- survfit(Surv(comp_time, comp_status) ~ ClinT_Stage, data = clean_df)
+
+ggsurvplot(km_comp, data = clean_df, pval = TRUE, conf.int = TRUE,
+           title = "Event-Free Survival by T-Stage")
 ```
 
 ```{r}

@@ -34,6 +34,10 @@ library(WinRatio)
 library(BuyseTest)
 library(msm)
 library(cmprsk)
+library(dcurves)
+library(tidyverse)
+library(gtsummary)
+
 ```
 
 ```{r}
@@ -248,7 +252,7 @@ table(clean_df$binary_comp)
 ```
 
 ## Logistic Regression
-```{r}
+```{r, warning=FALSE}
 
 clean_df$ClinT_Stage <- relevel(clean_df$ClinT_Stage, ref = "T1")
 
@@ -340,16 +344,69 @@ ggsurvplot(km_comp, data = clean_df, pval = TRUE, conf.int = TRUE,
 
 ```{r}
 
+df_binary <- clean_df %>%
+  mutate(
+    binary_os   = factor(os_status, levels = c(0, 1), labels = c("No Event", "Event")),
+    binary_bcr  = factor(bcr_status, levels = c(0, 1), labels = c("No Event", "Event")),
+    binary_met  = factor(met_status, levels = c(0, 1), labels = c("No Event", "Event")),
+    binary_comp = factor(comp_status, levels = c(0, 1), labels = c("No Event", "Event"))
+  )
+
+# summarize data
+df_binary %>%
+  select(-id) %>%
+  tbl_summary(type = all_dichotomous() ~ "categorical")
+
+
+```
+
+```{r}
+#Decision Curve Analysis
+mod1 <- glm(os_status ~ Age + PSA + ClinT_Stage,
+              family = binomial, data = df_binary)
+
+mod1$pred <- predict(mod1, type = "response")
+
+
 ```
 
 ```{r}
 
-```
+# COX Model 
 
-```{r}
+clean_df <- clean_df %>%
+  mutate(
+    bcr_time = ifelse(is.na(bcr_time), max(os_time, na.rm=TRUE), bcr_time),
+    met_time = ifelse(is.na(met_time), max(os_time, na.rm=TRUE), met_time),
+    comp_time = pmin(os_time, bcr_time, met_time, na.rm = TRUE),
+    across(c(bcr_time, met_time, comp_time), ~pmax(., 0))
+  )
 
-```
+cox_met <- coxph(Surv(met_time, met_status) ~ ClinT_Stage, data = clean_df, ties = "efron")
 
-```{r}
+cox_bcr <- coxph(Surv(bcr_time, bcr_status) ~ ClinT_Stage, data = clean_df, ties = "efron")
 
+cox_comp <- coxph(Surv(comp_time, comp_status) ~ ClinT_Stage, data = clean_df, ties = "efron")
+
+tidy_cox <- function(fit, title){
+  broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) |>
+    mutate(
+      HR_CI = sprintf("%.2f (%.2f–%.2f)", estimate, conf.low, conf.high),
+      p = signif(p.value, 3)
+    ) |>
+    select(term, HR_CI, p) |>
+    rename(Variable = term, `HR (95% CI)` = HR_CI, `p-value` = p) |>
+    (\(df){
+      cat(paste0("<b>", title, "</b>"))
+      knitr::kable(df, format="html", escape=TRUE) |>
+        kableExtra::kable_styling(full_width=TRUE, font_size=18)
+    })()
+}
+
+tidy_cox(cox_met,  "Cox model — Metastatic Survival")
+
+
+tidy_cox(cox_bcr,  "Cox model — Biochemical Recurrence (BCR)")
+
+tidy_cox(cox_comp,  "Cox model — Composite Outcome")
 ```

@@ -437,6 +437,8 @@ clean_df <- clean_df %>%
     across(c(bcr_time, met_time, comp_time), ~pmax(., 0.001))
   )
 
+cox_os <- coxph(Surv(os_time, os_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
+
 cox_met <- coxph(Surv(met_time, met_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
 
 cox_bcr <- coxph(Surv(bcr_time, bcr_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
@@ -457,6 +459,9 @@ tidy_cox <- function(fit, title){
         kableExtra::kable_styling(full_width=TRUE, font_size=18)
     })()
 }
+
+tidy_cox(cox_os,  "Cox model — Overall Survival")
+
 
 tidy_cox(cox_met,  "Cox model — Metastatic Survival")
 
@@ -486,8 +491,6 @@ clean_df <- clean_df %>%
   mutate(
     bcr_time = ifelse(is.na(bcr_time), os_time, bcr_time),
     met_time = ifelse(is.na(met_time), os_time, met_time),
-    met_time = ifelse(met_time < bcr_time, NA, met_time),
-
     
     bcr_time = pmax(bcr_time, 0.001),
     met_time = pmax(met_time, 0.001),
@@ -512,45 +515,53 @@ ms_data <- tmerge(ms_data, clean_df, id = id,
                   death = event(os_time, os_status))
 
 
-#Defining states
-
-ms_data <- ms_data %>%
-  mutate(
-    state = case_when(
-      death == 1 ~ 3,
-      met == 1 ~ 2,
-      bcr == 1 ~ 1,
-      TRUE ~ 0
-    )
-  )
-
 # Defining transitions
 
 ms_data <- ms_data %>%
   mutate(
     trans = case_when(
-      state == 1 ~ "0 -> 1",
-      state == 2 ~ "1 -> 2",
-      state == 3 ~ "2 -> 3",
+     bcr == 1 ~ "0->1",
+
+      met == 1 & (bcr_time >= met_time | is.na(bcr_time)) ~ "0->2",
+
+      death == 1 &
+        (bcr_time > os_time)& (met_time > os_time) ~ "0->3",
+
+      # After BCR (state 1)
+      met == 1 & bcr_time < met_time ~ "1->2",
+
+      death == 1 &
+        bcr_time < os_time &
+        (met_time > os_time | is.na(met_time)) ~ "1->3",
+
+      # After metastasis (state 2)
+      death == 1 & met_time < os_time ~ "2->3",
+
       TRUE ~ NA_character_
     )
   )
 
 
 #Fitting MSM
+ms_data$trans <- factor(ms_data$trans,
+                        levels = c("0->1","0->2","0->3",
+                                   "1->2","1->3","2->3"))
+
+ms_data <- ms_data %>%
+  mutate(event = ifelse(!is.na(trans), 1, 0))
 
 cox_msm <- coxph(
-  Surv(tstart, tstop, state !=0) ~ Age + PSA + ClinT_Stage + strata(trans),
+  Surv(tstart, tstop, event) ~ Age + log_PSA + ClinT_Stage + strata(trans),
   data = ms_data
 )
 
 summary(cox_msm)
 
 cox_msm_mod2 <- coxph(
-  Surv(tstart, tstop, state != 0) ~
-    Age:strata(trans) +
-    PSA:strata(trans) +
-    ClinT_Stage:strata(trans),
+  Surv(tstart, tstop, event) ~
+    Age +
+    log_PSA +
+    ClinT_Stage*trans,
   data = ms_data
 )
 
@@ -558,14 +569,14 @@ summary(cox_msm_mod2)
 
 #PH assumption check
 
-cox.zph(cox_msm)
-cox.zph(cox_msm_mod2)
+ph_msm <- cox.zph(cox_msm)
+ph_msm2 <- cox.zph(cox_msm_mod2)
 
 # Visualisation 
 
-ggcoxzph(cox.zph(cox_msm))
+ggcoxzph(ph_msm)
 
-ggcoxzph(cox.zph(cox_msm_mod2))
+ggcoxzph(ph_msm2)
 
 
 

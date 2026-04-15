@@ -106,14 +106,12 @@ head(clean_df)
 ```{r}
 numeric_summary <- clean_df %>%
   summarise(
-    mean_OS    = mean(os_time, na.rm = TRUE),
-    sd_OS      = sd(os_time, na.rm = TRUE),
+    
     median_OS  = median(os_time, na.rm = TRUE),
     min_OS     = min(os_time, na.rm = TRUE),
     max_OS     = max(os_time, na.rm = TRUE),
     
-    mean_BCR   = mean(bcr_time, na.rm = TRUE),
-    sd_BCR     = sd(bcr_time, na.rm = TRUE),
+    
     median_BCR = median(bcr_time, na.rm = TRUE),
     min_BCR    = min(bcr_time, na.rm = TRUE),
     max_BCR    = max(bcr_time, na.rm = TRUE),
@@ -126,7 +124,18 @@ numeric_summary <- clean_df %>%
 
 numeric_summary
 ```
+```{r}
+status_summary <- clean_df %>%
+  summarise(
+    os_events = sum(os_status == 1, na.rm = TRUE),
+   bcr_events = sum(bcr_status == 1, na.rm = TRUE), 
+   met_events = sum(met_status == 1, na.rm = TRUE),
+  )
 
+status_summary
+
+
+```
 ## Summary statistics for categorical variables
 ```{r}
 label(clean_df$Race)        <- "Race"

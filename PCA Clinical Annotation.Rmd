@@ -47,53 +47,53 @@ head(PCA)
 ```
 
 ```{r}
-# Clean the data to improve readability
+## Clean the data to improve readability
 clean_df <- PCA %>%
   filter(Type == "PRIMARY") %>%
   mutate(
-    
-    # ID
     id = `Sample ID`,
     
-    # Overall Survival
     os_time   = as.numeric(SurvTime),
     os_status = ifelse(Event == "NO", 0, 1),
     
-    # BCR
     bcr_time   = as.numeric(BCR_FreeTime),
     bcr_status = ifelse(BCR_Event == "BCR_Algorithm", 1, 0),
     
-    # Metastasis
     met_status = ifelse(MetsEvent == "NO", 0, 1),
     
-    # Baseline variables
     Age = as.numeric(DxAge),
     PSA = as.numeric(gsub("[^0-9.]", "", PreTxPSA)),
+    log_PSA = log(PSA + 1),
     
     Race = factor(Race),
+    
     ClinT_Stage = factor(ClinT_Stage) %>%
-      recode("T1C" = "T1",
-             "T2A" = "T2", "T2B" = "T2","T2C" = "T2",
-             "T3A" = "T3", "T3B" = "T3"),
+      recode(
+        "T1C" = "T1",
+        "T2A" = "T2", "T2B" = "T2", "T2C" = "T2",
+        "T3A" = "T3", "T3B" = "T3"
+      ),
+    
     PathStage = factor(PathStage) %>%
-      recode("T2A" = "T2",
-             "T2B" = "T3","T2C" = "T2",
-             "T3A" = "T3","T3B"	= "T3", "T3C" = "T3"),
+      recode(
+        "T2A" = "T2",
+        "T2B" = "T3", "T2C" = "T2",
+        "T3A" = "T3", "T3B" = "T3", "T3C" = "T3"
+      ),
     
-    # Nomogram
     NomoPred_SVI = as.numeric(`Nomogram NomoPred_SVI`)
-    
   ) %>%
   select(
     id,
-    Age, PSA,
+    Age, PSA, log_PSA,
     Race, ClinT_Stage, PathStage, NomoPred_SVI,
     bcr_time, bcr_status,
     met_status,
     os_time, os_status
   )
 
-clean_df$NomoPred_SVI[is.na(clean_df$NomoPred_SVI)] <- median(clean_df$NomoPred_SVI, na.rm = TRUE)
+clean_df$NomoPred_SVI[is.na(clean_df$NomoPred_SVI)] <- 
+  median(clean_df$NomoPred_SVI, na.rm = TRUE)
 ```
 
 ```{r}
@@ -435,24 +435,34 @@ any(is.na(df_binary$PSA))
 
 ## COX model and PH test
 ```{r}
-
-# COX Model 
-
 clean_df <- clean_df %>%
   mutate(
     bcr_time = ifelse(is.na(bcr_time), os_time, bcr_time),
     met_time = ifelse(is.na(met_time), os_time, met_time),
+    comp_status = pmax(os_status, bcr_status, met_status, na.rm = TRUE),
     comp_time = pmin(os_time, bcr_time, met_time, na.rm = TRUE),
     across(c(bcr_time, met_time, comp_time), ~pmax(., 0.001))
   )
 
-cox_os <- coxph(Surv(os_time, os_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
+clean_df$ClinT_Stage <- relevel(clean_df$ClinT_Stage, ref = "T1")
 
-cox_met <- coxph(Surv(met_time, met_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
+cox_os <- coxph(
+  Surv(os_time, os_status) ~ Age + log_PSA + ClinT_Stage,
+  data = clean_df,
+  ties = "efron"
+)
 
-cox_bcr <- coxph(Surv(bcr_time, bcr_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
+cox_bcr <- coxph(
+  Surv(bcr_time, bcr_status) ~ Age + log_PSA + ClinT_Stage,
+  data = clean_df,
+  ties = "efron"
+)
 
-cox_comp <- coxph(Surv(comp_time, comp_status) ~ Age + PSA + ClinT_Stage, data = clean_df, ties = "efron")
+cox_comp <- coxph(
+  Surv(comp_time, comp_status) ~ Age + log_PSA + ClinT_Stage,
+  data = clean_df,
+  ties = "efron"
+)
 
 tidy_cox <- function(fit, title){
   broom::tidy(fit, exponentiate = TRUE, conf.int = TRUE) |>
@@ -461,132 +471,332 @@ tidy_cox <- function(fit, title){
       p = signif(p.value, 3)
     ) |>
     select(term, HR_CI, p) |>
-    rename(Variable = term, `HR (95% CI)` = HR_CI, `p-value` = p) |>
+    rename(
+      Variable = term,
+      `HR (95% CI)` = HR_CI,
+      `p-value` = p
+    ) |>
     (\(df){
       cat(paste0("<b>", title, "</b>"))
-      knitr::kable(df, format="html", escape=TRUE) |>
-        kableExtra::kable_styling(full_width=TRUE, font_size=18)
+      knitr::kable(df, format = "html", escape = TRUE) |>
+        kableExtra::kable_styling(full_width = TRUE, font_size = 18)
     })()
 }
 
-tidy_cox(cox_os,  "Cox model — Overall Survival")
+tidy_cox(cox_os, "Cox model — Overall Survival")
+cat("<br>")
+tidy_cox(cox_bcr, "Cox model — Biochemical Recurrence")
+cat("<br>")
+tidy_cox(cox_comp, "Cox model — Composite Outcome")
 
-
-tidy_cox(cox_met,  "Cox model — Metastatic Survival")
-
-
-tidy_cox(cox_bcr,  "Cox model — Biochemical Recurrence (BCR)")
-
-tidy_cox(cox_comp,  "Cox model — Composite Outcome")
-
-ph_test_met <- cox.zph(cox_met)
+ph_test_os <- cox.zph(cox_os)
 ph_test_bcr <- cox.zph(cox_bcr)
 ph_test_comp <- cox.zph(cox_comp)
-ph_test_met
+
+ph_test_os
 ph_test_bcr
 ph_test_comp
+
+plot(ph_test_os)
 plot(ph_test_bcr)
 plot(ph_test_comp)
-plot(ph_test_met)
 ```
-
 
 
 ## Multi-State Model
 ```{r}
-# Preparing the dataset -  Censoring, ordering the events, ensuring positive time, log transform PSA
+## Multi-state model
 
-clean_df <- clean_df %>%
+states <- c("Stable", "BCR", "Death")
+
+Q <- matrix(
+  0,
+  nrow = 3,
+  ncol = 3,
+  dimnames = list(states, states)
+)
+
+Q["Stable", "BCR"]   <- 1
+Q["Stable", "Death"] <- 1
+Q["BCR", "Death"]    <- 1
+
+Q
+```
+
+```{r}
+msm_df <- clean_df %>%
+  filter(
+    !is.na(bcr_time),
+    !is.na(bcr_status),
+    !is.na(os_time),
+    !is.na(os_status),
+    !is.na(Age),
+    !is.na(log_PSA),
+    !is.na(ClinT_Stage)
+  ) %>%
   mutate(
-    bcr_time = ifelse(is.na(bcr_time), os_time, bcr_time),
-    met_time = ifelse(is.na(met_time), os_time, met_time),
+    ClinT_Stage = factor(ClinT_Stage),
+    PathStage = factor(PathStage),
     
     bcr_time = pmax(bcr_time, 0.001),
-    met_time = pmax(met_time, 0.001),
-    os_time  = pmax(os_time, 0.001),
-
-   
-    log_PSA = log(PSA + 1)
-  )
-
-
-ms_data <- tmerge(
-  data1 = clean_df,
-  data2 = clean_df,
-  id = id,
-  tstart = 0,
-  tstop = os_time
-)
-
-ms_data <- tmerge(ms_data, clean_df, id = id,
-                  bcr = event(bcr_time, bcr_status),
-                  met = event(met_time, met_status),
-                  death = event(os_time, os_status))
-
-
-# Defining transitions
-
-ms_data <- ms_data %>%
-  mutate(
-    trans = case_when(
-     bcr == 1 ~ "0->1",
-
-      met == 1 & (bcr_time >= met_time | is.na(bcr_time)) ~ "0->2",
-
-      death == 1 &
-        (bcr_time > os_time)& (met_time > os_time) ~ "0->3",
-
-      # After BCR (state 1)
-      met == 1 & bcr_time < met_time ~ "1->2",
-
-      death == 1 &
-        bcr_time < os_time &
-        (met_time > os_time | is.na(met_time)) ~ "1->3",
-
-      # After metastasis (state 2)
-      death == 1 & met_time < os_time ~ "2->3",
-
-      TRUE ~ NA_character_
+    os_time = pmax(os_time, 0.001)
+  ) %>%
+  rowwise() %>%
+  do({
+    id <- .$id
+    age <- .$Age
+    log_psa <- .$log_PSA
+    clin <- .$ClinT_Stage
+    path <- .$PathStage
+    
+    rows <- list(
+      data.frame(
+        id = id,
+        time = 0,
+        state = 1,
+        Age = age,
+        log_PSA = log_psa,
+        ClinT_Stage = clin,
+        PathStage = path
+      )
     )
-  )
+    
+    # BCR event
+    if (.$bcr_status == 1) {
+      bcr_time <- .$bcr_time
+      
+      rows <- c(rows, list(
+        data.frame(
+          id = id,
+          time = bcr_time,
+          state = 2,
+          Age = age,
+          log_PSA = log_psa,
+          ClinT_Stage = clin,
+          PathStage = path
+        )
+      ))
+    }
+    
+    # Death event
+    if (.$os_status == 1) {
+      death_time <- .$os_time
+      
+      if (.$bcr_status == 1 && death_time <= .$bcr_time) {
+        death_time <- .$bcr_time + 1e-5
+      }
+      
+      rows <- c(rows, list(
+        data.frame(
+          id = id,
+          time = death_time,
+          state = 3,
+          Age = age,
+          log_PSA = log_psa,
+          ClinT_Stage = clin,
+          PathStage = path
+        )
+      ))
+      
+    } else {
+      last_time <- .$os_time
+      last_state <- ifelse(.$bcr_status == 1, 2, 1)
+      
+      if (!(.$bcr_status == 1 && .$bcr_time == last_time)) {
+        rows <- c(rows, list(
+          data.frame(
+            id = id,
+            time = last_time,
+            state = last_state,
+            Age = age,
+            log_PSA = log_psa,
+            ClinT_Stage = clin,
+            PathStage = path
+          )
+        ))
+      }
+    }
+    
+    bind_rows(rows)
+  }) %>%
+  ungroup() %>%
+  arrange(id, time)
 
-
-#Fitting MSM
-ms_data$trans <- factor(ms_data$trans,
-                        levels = c("0->1","0->2","0->3",
-                                   "1->2","1->3","2->3"))
-
-ms_data <- ms_data %>%
-  mutate(event = ifelse(!is.na(trans), 1, 0))
-
-cox_msm <- coxph(
-  Surv(tstart, tstop, event) ~ Age + log_PSA + ClinT_Stage + strata(trans),
-  data = ms_data
-)
-
-summary(cox_msm)
-
-cox_msm_mod2 <- coxph(
-  Surv(tstart, tstop, event) ~
-    Age +
-    log_PSA +
-    ClinT_Stage*trans,
-  data = ms_data
-)
-
-summary(cox_msm_mod2)
-
-#PH assumption check
-
-ph_msm <- cox.zph(cox_msm)
-ph_msm2 <- cox.zph(cox_msm_mod2)
-
-# Visualisation 
-
-ggcoxzph(ph_msm)
-
-ggcoxzph(ph_msm2)
-
-
-
+head(msm_df)
 ```
+
+```{r}
+## MSM with Clinical T-stage
+
+msm_fit <- msm(
+  state ~ time,
+  subject = id,
+  data = msm_df,
+  qmatrix = Q,
+  covariates = ~ ClinT_Stage,
+  exacttimes = TRUE
+)
+
+summary(msm_fit)
+```
+
+```{r}
+## MSM with all covariates
+
+msm_fit_all <- msm(
+  state ~ time,
+  subject = id,
+  data = msm_df,
+  qmatrix = Q,
+  covariates = ~ Age + log_PSA + ClinT_Stage + PathStage,
+  exacttimes = TRUE
+)
+
+summary(msm_fit_all)
+```
+
+```{r}
+## Transition probabilities
+
+pt <- pmatrix.msm(msm_fit, t = 12)
+pt
+
+times <- seq(0, max(msm_df$time, na.rm = TRUE), by = 1)
+
+probs <- sapply(times, function(t) {
+  pmatrix.msm(msm_fit, t = t)[1, ]
+})
+
+matplot(
+  times,
+  t(probs),
+  type = "l",
+  lty = 1,
+  lwd = 2,
+  xlab = "Time months",
+  ylab = "Probability",
+  main = "State occupation probabilities from Stable"
+)
+
+legend(
+  "topright",
+  legend = states,
+  lty = 1,
+  lwd = 2
+)
+```
+
+```{r}
+## Transition probabilities by Clinical T-stage
+
+pt_T1_12 <- pmatrix.msm(
+  msm_fit,
+  t = 12,
+  covariates = list(ClinT_Stage = "T1")
+)
+
+pt_T2_12 <- pmatrix.msm(
+  msm_fit,
+  t = 12,
+  covariates = list(ClinT_Stage = "T2")
+)
+
+pt_T3_12 <- pmatrix.msm(
+  msm_fit,
+  t = 12,
+  covariates = list(ClinT_Stage = "T3")
+)
+
+pt_T1_12
+pt_T2_12
+pt_T3_12
+```
+
+```{r}
+## Plot probability of remaining Stable by T-stage
+
+probs_T1 <- sapply(times, function(t) {
+  pmatrix.msm(
+    msm_fit,
+    t = t,
+    covariates = list(ClinT_Stage = "T1")
+  )[1, ]
+})
+
+probs_T2 <- sapply(times, function(t) {
+  pmatrix.msm(
+    msm_fit,
+    t = t,
+    covariates = list(ClinT_Stage = "T2")
+  )[1, ]
+})
+
+probs_T3 <- sapply(times, function(t) {
+  pmatrix.msm(
+    msm_fit,
+    t = t,
+    covariates = list(ClinT_Stage = "T3")
+  )[1, ]
+})
+
+plot(
+  times,
+  probs_T1[1, ],
+  type = "l",
+  lwd = 2,
+  ylim = c(0, 1),
+  xlab = "Time months",
+  ylab = "P Stable",
+  main = "Probability of remaining Stable by Clinical T-stage"
+)
+
+lines(times, probs_T2[1, ], lwd = 2, lty = 2)
+lines(times, probs_T3[1, ], lwd = 2, lty = 3)
+
+legend(
+  "topright",
+  legend = c("T1", "T2", "T3"),
+  lty = c(1, 2, 3),
+  lwd = 2
+)
+```
+
+```{r}
+## Plot cumulative probability of Death by T-stage
+
+plot(
+  times,
+  probs_T1[3, ],
+  type = "l",
+  lwd = 2,
+  ylim = c(0, 1),
+  xlab = "Time months",
+  ylab = "P Death",
+  main = "Cumulative probability of Death by Clinical T-stage"
+)
+
+lines(times, probs_T2[3, ], lwd = 2, lty = 2)
+lines(times, probs_T3[3, ], lwd = 2, lty = 3)
+
+legend(
+  "topleft",
+  legend = c("T1", "T2", "T3"),
+  lty = c(1, 2, 3),
+  lwd = 2
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

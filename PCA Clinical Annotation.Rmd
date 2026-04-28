@@ -67,6 +67,8 @@ clean_df <- PCA %>%
     
     Race = factor(Race),
     
+    BxGGS = as.numeric(BxGGS),
+    
     ClinT_Stage = factor(ClinT_Stage) %>%
       recode(
         "T1C" = "T1",
@@ -86,7 +88,7 @@ clean_df <- PCA %>%
   select(
     id,
     Age, PSA, log_PSA,
-    Race, ClinT_Stage, PathStage, NomoPred_SVI,
+    Race, ClinT_Stage, PathStage, NomoPred_SVI,BxGGS,
     bcr_time, bcr_status,
     met_status,
     os_time, os_status
@@ -119,7 +121,13 @@ numeric_summary <- clean_df %>%
     mean_Age   = mean(Age, na.rm = TRUE),
     sd_Age     = sd(Age, na.rm = TRUE),
     mean_PSA   = mean(PSA, na.rm = TRUE),
-    sd_PSA     = sd(PSA, na.rm = TRUE)
+    sd_PSA     = sd(PSA, na.rm = TRUE),
+    
+    mean_GGS   = mean(BxGGS, na.rm = TRUE),
+    sd_GGS     = sd(BxGGS, na.rm = TRUE),
+    median_GGS = median(BxGGS, na.rm = TRUE),
+    min_GGS    = min(BxGGS, na.rm = TRUE),
+    max_GGS    = max(BxGGS, na.rm = TRUE)
   )
 
 numeric_summary
@@ -141,8 +149,9 @@ status_summary
 label(clean_df$Race)        <- "Race"
 label(clean_df$ClinT_Stage) <- "Clinical T Stage"
 label(clean_df$PathStage)   <- "Pathological Stage"
+label(clean_df$BxGGS)       <- "Gleason Grade"
 
-table1(~ Race + ClinT_Stage + PathStage, data = clean_df)
+table1(~ Race + ClinT_Stage + PathStage + BxGGS, data = clean_df)
 ```
 
 ```{r}
@@ -216,9 +225,9 @@ ggplotly(plot_events)
 
 ## Baseline variables
 ```{r}
-vars <- c("Age", "PSA", "Race", "ClinT_Stage", "PathStage",
+vars <- c("Age", "PSA", "Race", "ClinT_Stage", "PathStage","BxGGS",
           "os_status", "bcr_status", "met_status")
-factorVars <- c("Race", "ClinT_Stage", "PathStage")
+factorVars <- c("Race", "ClinT_Stage", "PathStage", "BxGGS")
 
 tab1 <- CreateTableOne(
   vars = vars,
